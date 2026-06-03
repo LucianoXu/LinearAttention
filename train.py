@@ -45,6 +45,79 @@ def get_SingleTextDataLoader(
 
     return DataLoader(dataset=ds, batch_size=batch_size, collate_fn=collate_fn)
 
+def single_batch_test_train(
+            args: TransformerArgs,
+    lr = 1e-4,
+    betas = (0.9, 0.999),
+    step_limit = 200,
+    batch_size = 4,
+    seed=42,
+    device='cpu'
+    ):
+
+    random.seed(seed)
+
+    model = Transformer(args)
+    model.to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr = lr,
+        betas = betas
+    )
+    loss = torch.nn.CrossEntropyLoss()
+
+    dataloader = get_SingleTextDataLoader(
+        'ds/tiny_shakespeare.txt', 
+        args, 
+        batch_size=batch_size
+    )
+
+    step = 0
+
+    # one subdirectory per run so TensorBoard shows them as separate runs
+    run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    writer = tensorboard.SummaryWriter(f'log/{run_name}')
+
+    # build the causal mask
+
+    causal_mask = torch.tril(torch.ones(args.context_len, args.context_len, dtype=torch.int))
+
+    progress_bar = tqdm.tqdm(range(step_limit), desc="Training Progress")
+
+    single_batch = next(iter(dataloader))
+
+    try:
+        while True:
+            optimizer.zero_grad()
+            step += 1
+            input, label = single_batch
+
+            input = input.to(device=device)
+            label = label.to(device=device)
+
+            logits = model.forward(input, causal_mask)
+
+            # logits: (B, T, V), label: (B, T)
+            # CrossEntropyLoss needs (N, C) + (N,), so flatten batch and time dims
+            B, T, V = logits.shape
+            l : torch.Tensor = loss(logits.reshape(B * T, V), label.reshape(B * T))
+
+            l.backward()
+            optimizer.step()
+
+
+            loss_value = l.item()
+            writer.add_scalar("loss", loss_value, step)
+
+            progress_bar.update(1)
+            progress_bar.set_postfix(loss=loss_value)
+
+            if step >= step_limit:
+                break
+    finally:
+        # flush buffered events to disk and close the file, even on error/interrupt
+        writer.close()
 
 def train(
     args: TransformerArgs,
@@ -59,6 +132,8 @@ def train(
     random.seed(seed)
 
     model = Transformer(args)
+    model.to(device)
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr = lr,
@@ -80,9 +155,9 @@ def train(
     run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     writer = tensorboard.SummaryWriter(f'log/{run_name}')
 
-    # build the casual mask
+    # build the causal mask
 
-    casual_mask = torch.tril(torch.ones(args.context_len, args.context_len, dtype=torch.int))
+    causal_mask = torch.tril(torch.ones(args.context_len, args.context_len, dtype=torch.int))
 
     progress_bar = tqdm.tqdm(range(step_limit), desc="Training Progress")
 
@@ -95,7 +170,7 @@ def train(
             input = input.to(device=device)
             label = label.to(device=device)
 
-            logits = model.forward(input, casual_mask)
+            logits = model.forward(input, causal_mask)
 
             # logits: (B, T, V), label: (B, T)
             # CrossEntropyLoss needs (N, C) + (N,), so flatten batch and time dims
