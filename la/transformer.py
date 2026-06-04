@@ -16,6 +16,8 @@ class TransformerArgs:
 
 
 class RoPE(nn.Module):
+    m: torch.Tensor   # declares the registered buffer's type so Pylance treats self.m as a Tensor
+
     def __init__(self, args: TransformerArgs):
         super().__init__()
 
@@ -24,20 +26,26 @@ class RoPE(nn.Module):
 
         self.prepared_L = 0
 
+        self.register_buffer('m', torch.zeros(()), persistent=False)
         self.prepare_m(args.context_len)
 
 
     def prepare_m(self, L: int):
 
         if L > self.prepared_L:
-
-            idxk = torch.arange(0, self.args.dim // 2) / (self.args.dim // 2)
-            phase = torch.outer(torch.arange(0, L), torch.pow(10000, -idxk))
+            device : torch.device = self.m.device
+            dtype : torch.dtype = self.m.dtype
+            idxk = torch.arange(0, self.args.dim // 2, device=device, dtype=dtype) / (self.args.dim // 2)
+            phase = torch.outer(torch.arange(0, L, device=device, dtype=dtype), torch.pow(10000, -idxk,))
             m_sin = torch.sin(phase)    # (L, dim/2)
             m_cos = torch.cos(phase)    # (L, dim/2)
 
             # m : (L, dim/2, 2, 2)
-            self.register_buffer('m', torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // 2, 2, 2))
+            self.register_buffer(
+                'm', 
+                torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // 2, 2, 2),
+                persistent=False
+            )
 
             self.prepared_L = L
 
@@ -119,7 +127,7 @@ class SoftMaxAttention(nn.Module):
         a = torch.einsum('bid,bjd->bij', q, k) # (b, l, l)
 
         if mask is not None:
-            mask_delta = (torch.ones_like(mask) - mask) * (-1e+8)
+            mask_delta = (torch.ones_like(mask, device=x.device, dtype = x.dtype) - mask) * (-1e+8)
             a = a + mask_delta
 
         coefs = torch.softmax(a * self.att_coef, dim=-1)

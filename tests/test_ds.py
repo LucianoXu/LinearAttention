@@ -12,7 +12,7 @@ def test_circle_slice():
 
 
 def test_rope():
-    from la.model import RoPE, TransformerArgs
+    from la.transformer import RoPE, TransformerArgs
     import torch
 
     args = TransformerArgs()

@@ -6,7 +6,7 @@ def get_tiny_shakespeare(path: str):
 
     ds = load_dataset("text", data_files=url, sample_by="document")
 
-    with open(path, 'a') as p:
+    with open(path, 'w') as p:
         p.write(ds["train"]['text'][0])
 
 
