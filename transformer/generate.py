@@ -1,5 +1,5 @@
-from la.transformer import Transformer
-from la.config import TrainConfig
+from .model import Transformer
+from .config import TrainConfig
 import torch
 import numpy as np
 from pathlib import Path

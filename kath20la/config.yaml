@@ -1,0 +1,21 @@
+model_args:
+  vocab_size: 256
+  dim: 512
+  ffn_mult: 4
+  n_layers: 8
+  context_len: 1024
+
+lr: 1e-4
+betas: [0.9, 0.999]
+grad_norm_clip: 1.0
+warm_up_steps: 300
+step_limit: 3000
+batch_size: 8
+seed: 42
+train_ratio: 0.9
+device: mps
+output_path: 'ckpt/'
+experiment_name: kath20la
+save_interval: 100
+valid_interval: 50
+single_batch_test: False

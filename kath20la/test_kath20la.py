@@ -2,7 +2,7 @@ import numpy as np
 
 
 def test_circle_slice():
-    from la.ds import circle_slice
+    from .ds import circle_slice
 
     arr = np.array(list(range(10)))
 
@@ -12,10 +12,10 @@ def test_circle_slice():
 
 
 def test_rope():
-    from la.transformer import RoPE, TransformerArgs
+    from .model import RoPE, ModelArgs
     import torch
 
-    args = TransformerArgs()
+    args = ModelArgs()
     rope = RoPE(args)
 
     a = torch.rand(1, args.context_len, args.dim)

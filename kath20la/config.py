@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from la.transformer import TransformerArgs
+from .model import ModelArgs
 
 
 @dataclass
@@ -15,7 +15,7 @@ class TrainConfig:
     instead of `config['lr']`.
     """
 
-    model_args: TransformerArgs = field(default_factory=TransformerArgs)
+    model_args: ModelArgs = field(default_factory=ModelArgs)
 
     lr: float = 1e-4
     betas: tuple[float, float] = (0.9, 0.999)
@@ -38,7 +38,7 @@ class TrainConfig:
     def __post_init__(self):
         # YAML gives model_args as a nested dict; build the real dataclass.
         if isinstance(self.model_args, dict):
-            self.model_args = TransformerArgs(**self.model_args)
+            self.model_args = ModelArgs(**self.model_args)
 
         # YAML quirk: `1e-4` (no dot, no sign on the exponent) parses as a
         # *string*, and `betas` arrives as a list. Coerce numeric fields to
@@ -62,7 +62,7 @@ class TrainConfig:
         return Path(self.output_path) / self.experiment_name
 
     def to_plain_dict(self) -> dict:
-        d = asdict(self)                 # recurses into TransformerArgs
+        d = asdict(self)                 # recurses into ModelArgs
         d["betas"] = list(d["betas"])    # yaml.safe_dump can't represent tuples
         return d
 

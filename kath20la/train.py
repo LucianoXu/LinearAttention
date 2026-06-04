@@ -1,6 +1,6 @@
-from la.ds import get_tiny_shakespeare, txt_to_np, circle_slice
-from la.transformer import Transformer
-from la.config import TrainConfig
+from .ds import get_tiny_shakespeare, txt_to_np, circle_slice
+from .model import Kath20LA
+from .config import TrainConfig
 
 import torch
 import tqdm
@@ -76,7 +76,9 @@ def set_seeds(seed: int):
     torch.cuda.manual_seed(seed)
 
 
-def train(config: TrainConfig):
+def train(config_path: str):
+
+    config = TrainConfig.from_yaml(config_path)
 
     # persist the resolved config (defaults merged in) for reproducibility
     config.save()
@@ -88,10 +90,10 @@ def train(config: TrainConfig):
     model_args = config.model_args
     device = config.device
 
-    model = Transformer(model_args)
+    model = Kath20LA(model_args)
     model.to(device=device)
 
-    print("TransformerArgs: ")
+    print("ModelArgs: ")
     print(model_args)
 
     print()
