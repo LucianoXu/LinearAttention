@@ -18,6 +18,7 @@ class TrainConfig:
     model_args: ModelArgs = field(default_factory=ModelArgs)
 
     lr: float = 1e-4
+    wd: float = 0.05
     betas: tuple[float, float] = (0.9, 0.999)
     grad_norm_clip: float = 1.0
     warm_up_steps: int = 300

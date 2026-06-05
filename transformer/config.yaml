@@ -1,13 +1,15 @@
 model_args:
   vocab_size: 256
   dim: 512
+  v_dim_mult: 2
+  ffn_mult: 3
   head: 4
-  ffn_mult: 4
   n_layers: 8
   context_len: 1024
 
-lr: 1e-4
-betas: [0.9, 0.999]
+lr: 3e-4
+wd: 0.05
+betas: [0.9, 0.98]
 grad_norm_clip: 1.0
 warm_up_steps: 300
 step_limit: 3000
@@ -16,7 +18,7 @@ seed: 42
 train_ratio: 0.9
 device: mps
 output_path: 'ckpt/'
-experiment_name: T3
+experiment_name: transformer-vdim2
 save_interval: 100
 valid_interval: 50
 single_batch_test: False

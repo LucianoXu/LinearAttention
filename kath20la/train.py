@@ -104,6 +104,7 @@ def train(config_path: str):
         model.parameters(),
         lr=config.lr,
         betas=config.betas,
+        weight_decay=config.wd,
     )
 
     # cosine lr scheduler with warm-up

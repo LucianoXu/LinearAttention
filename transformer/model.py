@@ -10,6 +10,7 @@ from torch.nn import functional as F
 class ModelArgs:
     vocab_size: int = 256
     dim: int = 512
+    v_dim_mult: int = 2
     head: int = 16
     ffn_mult: int = 4
     n_layers: int = 8
@@ -104,12 +105,12 @@ class SoftMaxAttention(nn.Module):
 
         self.wv = nn.Linear(
             in_features=self.args.dim,
-            out_features=self.args.dim,
+            out_features=self.args.dim * self.args.v_dim_mult,
             bias = False
         )
 
         self.wo = nn.Linear(
-            in_features=self.args.dim,
+            in_features=self.args.dim * self.args.v_dim_mult,
             out_features=self.args.dim,
             bias = False
         )
@@ -119,20 +120,21 @@ class SoftMaxAttention(nn.Module):
         # mask: lower-triangular 0/1 causal mask, or None for full attention
         # x : (b, l, d)
 
-        B, L, H, D = x.shape[0], x.shape[1], self.args.head, self.args.dim // self.args.head
+        B, L = x.shape[0], x.shape[1]
+        H, Dh = self.args.head, self.args.dim // self.args.head
+        Dvh = self.args.dim * self.args.v_dim_mult // self.args.head   # widened value head dim
 
-        q = self.rope(self.wq(x).reshape(B, L, H, D).transpose(1, 2))   # (B, H, L, D)
-        k = self.rope(self.wk(x).reshape(B, L, H, D).transpose(1, 2))
-        v = self.wv(x).reshape(B, L, H, D).transpose(1, 2)
+        q = self.rope(self.wq(x).reshape(B, L, H, Dh).transpose(1, 2))   # (B, H, L, Dh)
+        k = self.rope(self.wk(x).reshape(B, L, H, Dh).transpose(1, 2))
+        v = self.wv(x).reshape(B, L, H, Dvh).transpose(1, 2)             # (B, H, L, Dvh)
 
         # fused scaled-dot-product attention (Flash-style): never materialises
-        # the (B, H, L, L) score matrix, and scales by 1/sqrt(head_dim) itself.
-        # `mask` here is the causal mask -> use the fast built-in causal path.
+        # the (B, H, L, L) score matrix, scales by 1/sqrt(Dh). V may be widened.
         out = F.scaled_dot_product_attention(q, k, v, is_causal=(mask is not None))
 
-        out = out.transpose(1, 2).reshape(B, L, -1)   # (B, H, L, D) -> (B, L, dim)
+        out = out.transpose(1, 2).reshape(B, L, -1)   # (B, H, L, Dvh) -> (B, L, dim*v_dim_mult)
 
-        x = self.wo(out)
+        x = self.wo(out)   # (B, L, dim*v_dim_mult) -> (B, L, dim)
 
         return x
 

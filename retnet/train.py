@@ -1,5 +1,5 @@
 from .ds import get_tiny_shakespeare, txt_to_np, circle_slice
-from .model import Transformer
+from .model import RetNet
 from .config import TrainConfig
 
 import torch
@@ -90,7 +90,7 @@ def train(config_path: str):
     model_args = config.model_args
     device = config.device
 
-    model = Transformer(model_args)
+    model = RetNet(model_args)
     model.to(device=device)
 
     print("ModelArgs: ")
@@ -104,7 +104,7 @@ def train(config_path: str):
         model.parameters(),
         lr=config.lr,
         betas=config.betas,
-        weight_decay=config.wd,
+        weight_decay=config.wd
     )
 
     # cosine lr scheduler with warm-up
