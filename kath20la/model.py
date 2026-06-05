@@ -4,13 +4,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-import math
-
-
 @dataclass
 class ModelArgs:
     vocab_size: int = 256
     dim: int = 512
+    head: int = 16
     ffn_mult: int = 4
     n_layers: int = 8
     context_len : int = 128
@@ -36,15 +34,15 @@ class RoPE(nn.Module):
         if L > self.prepared_L:
             device : torch.device = self.m.device
             dtype : torch.dtype = self.m.dtype
-            idxk = torch.arange(0, self.args.dim // 2, device=device, dtype=dtype) / (self.args.dim // 2)
+            idxk = torch.arange(0, self.args.dim // self.args.head // 2, device=device, dtype=dtype) / (self.args.dim // self.args.head // 2)
             phase = torch.outer(torch.arange(0, L, device=device, dtype=dtype), torch.pow(10000, -idxk,))
-            m_sin = torch.sin(phase)    # (L, dim/2)
-            m_cos = torch.cos(phase)    # (L, dim/2)
+            m_sin = torch.sin(phase)    # (L, head_dim/2)
+            m_cos = torch.cos(phase)    # (L, head_dim/2)
 
-            # m : (L, dim/2, 2, 2)
+            # m : (L, head_dim/2, 2, 2)  -- RoPE now operates per head
             self.register_buffer(
-                'm', 
-                torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // 2, 2, 2),
+                'm',
+                torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // self.args.head // 2, 2, 2),
                 persistent=False
             )
 
@@ -52,19 +50,19 @@ class RoPE(nn.Module):
 
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor | None = None):
-        
-        # x : (b, l, d)
-        # pos: (b, l), assume it to be ascending
+
+        # x : (..., l, head_dim)   e.g. parallel (B, H, L, head_dim)
+        # pos: (b, l) absolute positions for the recurrent path; None -> 0..L-1
 
         if pos is None:
-            self.prepare_m(x.shape[1])
+            self.prepare_m(x.shape[-2])
 
             # slice the matrix
-            m = self.m[:x.shape[1], ...]
+            m = self.m[:x.shape[-2], ...]                       # (L, head_dim/2, 2, 2)
 
-            x = x.reshape(x.shape[0], x.shape[1], -1, 2)
-            x = torch.einsum('ldmn,bldn->bldm', m, x)
-            x = x.reshape(x.shape[0], x.shape[1], -1)
+            x = x.reshape(*x.shape[:-1], x.shape[-1] // 2, 2)   # (..., L, head_dim/2, 2)
+            x = torch.einsum('ldmn,...ldn->...ldm', m, x)
+            x = x.reshape(*x.shape[:-2], -1)
 
             return x
 
@@ -73,11 +71,11 @@ class RoPE(nn.Module):
             self.prepare_m(int(pos.max().item()) + 1)
 
             # slice the matrix
-            m = self.m[pos]
+            m = self.m[pos]                                     # (B, S, head_dim/2, 2, 2)
 
-            x = x.reshape(x.shape[0], x.shape[1], -1, 2)
-            x = torch.einsum('bldmn,bldn->bldm', m, x)
-            x = x.reshape(x.shape[0], x.shape[1], -1)
+            x = x.reshape(*x.shape[:-1], x.shape[-1] // 2, 2)   # (B, H, S, head_dim/2, 2)
+            x = torch.einsum('bsdmn,bhsdn->bhsdm', m, x)        # broadcast rotation over heads
+            x = x.reshape(*x.shape[:-2], -1)
 
             return x
     
@@ -99,11 +97,11 @@ class LinearAttention(nn.Module):
     def __init__(self, args: ModelArgs, rope: RoPE):
         super().__init__()
 
+        assert args.dim % args.head == 0
+
         self.args = args
 
         self.rope = rope
-
-        self.att_coef = 1 / math.sqrt(self.args.dim)
 
         self.wq = nn.Linear(
             in_features=self.args.dim,
@@ -130,30 +128,34 @@ class LinearAttention(nn.Module):
         )
 
     def recurrent_forward(self, x, step_count, kv_state_t: torch.Tensor, phik_state_t: torch.Tensor):
-        # new_embedding: (B, 1, D), modified in place
-        
-        pos = torch.tensor([step_count], device=x.device).broadcast_to(x.shape[0], 1)
+        # x: (B, 1, dim);  kv_state_t: (B, H, head_dim, head_dim);  phik_state_t: (B, H, head_dim)
 
-        q = self.rope(self.wq(x), pos).squeeze(1)
-        phi_q_tp1 = F.elu(q) + 1
+        B = x.shape[0]
+        H, Dh = self.args.head, self.args.dim // self.args.head
 
-        k = self.rope(self.wk(x), pos).squeeze(1)
-        phi_k_tp1 = F.elu(k) + 1 # (B, D)
+        pos = torch.tensor([step_count], device=x.device).broadcast_to(B, 1)
 
-        v_tp1 = self.wv(x).squeeze(1) # (B, D)
+        q = self.rope(self.wq(x).reshape(B, 1, H, Dh).transpose(1, 2), pos)   # (B, H, 1, Dh)
+        phi_q_tp1 = (F.elu(q) + 1).squeeze(2)                                 # (B, H, Dh)
 
-        phik_state_tp1 = phik_state_t + phi_k_tp1
-        kv_state_tp1 = kv_state_t + torch.einsum('bi,bj->bij', phi_k_tp1, v_tp1)
+        k = self.rope(self.wk(x).reshape(B, 1, H, Dh).transpose(1, 2), pos)
+        phi_k_tp1 = (F.elu(k) + 1).squeeze(2)                                 # (B, H, Dh)
 
-        den = torch.einsum('bi,bi->b', phi_q_tp1, phik_state_tp1)
-        
-        out = torch.einsum('bi,bij,b->bj', phi_q_tp1, kv_state_tp1, 1/(den + 1e-7))
+        v_tp1 = self.wv(x).reshape(B, 1, H, Dh).transpose(1, 2).squeeze(2)    # (B, H, Dh)
 
-        x = self.wo(out).unsqueeze(1)
+        phik_state_tp1 = phik_state_t + phi_k_tp1                             # (B, H, Dh)
+        kv_state_tp1 = kv_state_t + torch.einsum('bhi,bhj->bhij', phi_k_tp1, v_tp1)   # (B, H, Dh, Dh)
+
+        den = torch.einsum('bhi,bhi->bh', phi_q_tp1, phik_state_tp1)          # (B, H)
+
+        out = torch.einsum('bhi,bhij,bh->bhj', phi_q_tp1, kv_state_tp1, 1/(den + 1e-7))   # (B, H, Dh)
+
+        out = out.reshape(B, 1, H * Dh)                                       # (B, 1, dim)
+        x = self.wo(out)
 
         phik_state_t.copy_(phik_state_tp1)
         kv_state_t.copy_(kv_state_tp1)
-        
+
         return x
 
 
@@ -161,27 +163,31 @@ class LinearAttention(nn.Module):
 
 
     def forward(self, x, mask = None):
-        # mask: 0/1 matrix or None
-        # x : (b, l, d)
+        # mask: lower-triangular 0/1 causal mask (L, L), or None
+        # x : (b, l, dim)
 
-        q = self.rope(self.wq(x))
+        B, L = x.shape[0], x.shape[1]
+        H, Dh = self.args.head, self.args.dim // self.args.head
+
+        q = self.rope(self.wq(x).reshape(B, L, H, Dh).transpose(1, 2))   # (B, H, L, Dh)
         phi_q = F.elu(q) + 1
 
-        k = self.rope(self.wk(x))
+        k = self.rope(self.wk(x).reshape(B, L, H, Dh).transpose(1, 2))
         phi_k = F.elu(k) + 1
 
-        v = self.wv(x)
+        v = self.wv(x).reshape(B, L, H, Dh).transpose(1, 2)              # (B, H, L, Dh)
 
-        A = torch.einsum('bix,bjx->bij', phi_q, phi_k) # (B, L, L)
+        A = torch.einsum('bhid,bhjd->bhij', phi_q, phi_k) # (B, H, L, L)
 
         if mask is not None:
             A = A * mask
 
-        out = torch.einsum('bij,bjd-> bid', A, v)
-        den = A.sum(dim=-1, keepdim=True)
-        x = out / (den + 1e-7)
+        out = torch.einsum('bhij,bhjd->bhid', A, v)         # (B, H, L, Dh)
+        den = A.sum(dim=-1, keepdim=True)                   # (B, H, L, 1)
+        out = out / (den + 1e-7)
 
-        x = self.wo(x)
+        out = out.transpose(1, 2).reshape(B, L, -1)         # (B, L, dim)
+        x = self.wo(out)
 
         return x
 
@@ -279,16 +285,16 @@ class Kath20LA(nn.Module):
 
     def recurrent_forward(self, x, step_count, kv_state_t: torch.Tensor | None, phik_state_t: torch.Tensor | None):
         B, _ = x.shape
-        D = self.args.dim
+        H, Dh = self.args.head, self.args.dim // self.args.head
 
         if kv_state_t is None:
-            kv_state_t = torch.zeros(B, self.args.n_layers, D, D, device=x.device)
+            kv_state_t = torch.zeros(B, self.args.n_layers, H, Dh, Dh, device=x.device)
         if phik_state_t is None:
-            phik_state_t = torch.zeros(B, self.args.n_layers, D, device=x.device)
+            phik_state_t = torch.zeros(B, self.args.n_layers, H, Dh, device=x.device)
 
         x = self.embedding(x)
         for i, block in enumerate(self.blocks): # type: ignore
-            block: LinearAttention
+            block: Blocks
             x = block.recurrent_forward(x, step_count, kv_state_t[:, i, ...], phik_state_t[:, i, ...])
 
         x = self.head(x)

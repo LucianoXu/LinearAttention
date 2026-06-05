@@ -2,14 +2,15 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
-import math
 
 
 @dataclass
 class ModelArgs:
     vocab_size: int = 256
     dim: int = 512
+    head: int = 16
     ffn_mult: int = 4
     n_layers: int = 8
     context_len : int = 128
@@ -35,7 +36,7 @@ class RoPE(nn.Module):
         if L > self.prepared_L:
             device : torch.device = self.m.device
             dtype : torch.dtype = self.m.dtype
-            idxk = torch.arange(0, self.args.dim // 2, device=device, dtype=dtype) / (self.args.dim // 2)
+            idxk = torch.arange(0, self.args.dim // self.args.head // 2, device=device, dtype=dtype) / (self.args.dim // self.args.head // 2)
             phase = torch.outer(torch.arange(0, L, device=device, dtype=dtype), torch.pow(10000, -idxk,))
             m_sin = torch.sin(phase)    # (L, dim/2)
             m_cos = torch.cos(phase)    # (L, dim/2)
@@ -43,7 +44,7 @@ class RoPE(nn.Module):
             # m : (L, dim/2, 2, 2)
             self.register_buffer(
                 'm', 
-                torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // 2, 2, 2),
+                torch.stack([m_cos, m_sin, -m_sin, m_cos], dim=-1).reshape(L, self.args.dim // self.args.head // 2, 2, 2),
                 persistent=False
             )
 
@@ -52,16 +53,16 @@ class RoPE(nn.Module):
 
     def forward(self, x: torch.Tensor):
         
-        # x : (b, l, d)
+        # x : (..., l, d)
 
-        self.prepare_m(x.shape[1])
+        self.prepare_m(x.shape[-2])
 
         # slice the matrix
-        m = self.m[:x.shape[1], ...]
+        m = self.m[:x.shape[-2], ...]
 
-        x = x.reshape(x.shape[0], x.shape[1], -1, 2)
-        x = torch.einsum('ldmn,bldn->bldm', m, x)
-        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.reshape(*x.shape[:-1], x.shape[-1] // 2, 2)
+        x = torch.einsum('ldmn,...ldn->...ldm', m, x)
+        x = x.reshape(*x.shape[:-2], -1)
 
         return x
     
@@ -83,11 +84,11 @@ class SoftMaxAttention(nn.Module):
     def __init__(self, args: ModelArgs, rope: RoPE):
         super().__init__()
 
+        assert args.dim % args.head == 0
+
         self.args = args
 
         self.rope = rope
-
-        self.att_coef = 1 / math.sqrt(self.args.dim)
 
         self.wq = nn.Linear(
             in_features=self.args.dim,
@@ -115,26 +116,23 @@ class SoftMaxAttention(nn.Module):
 
 
     def forward(self, x, mask = None):
-        # mask: 0/1 matrix or None
+        # mask: lower-triangular 0/1 causal mask, or None for full attention
         # x : (b, l, d)
 
-        q = self.rope(self.wq(x))
-        k = self.rope(self.wk(x))
-        v = self.wv(x)
+        B, L, H, D = x.shape[0], x.shape[1], self.args.head, self.args.dim // self.args.head
 
-        # q,k,v all (b, l, d)
+        q = self.rope(self.wq(x).reshape(B, L, H, D).transpose(1, 2))   # (B, H, L, D)
+        k = self.rope(self.wk(x).reshape(B, L, H, D).transpose(1, 2))
+        v = self.wv(x).reshape(B, L, H, D).transpose(1, 2)
 
-        a = torch.einsum('bid,bjd->bij', q, k) # (b, l, l)
+        # fused scaled-dot-product attention (Flash-style): never materialises
+        # the (B, H, L, L) score matrix, and scales by 1/sqrt(head_dim) itself.
+        # `mask` here is the causal mask -> use the fast built-in causal path.
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=(mask is not None))
 
-        if mask is not None:
-            mask_delta = (torch.ones_like(mask, device=x.device, dtype = x.dtype) - mask) * (-1e+8)
-            a = a + mask_delta
+        out = out.transpose(1, 2).reshape(B, L, -1)   # (B, H, L, D) -> (B, L, dim)
 
-        coefs = torch.softmax(a * self.att_coef, dim=-1)
-
-        x = torch.einsum('bij,bjd->bid', coefs, v)
-
-        x = self.wo(x)
+        x = self.wo(out)
 
         return x
 
