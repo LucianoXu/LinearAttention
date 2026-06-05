@@ -25,8 +25,10 @@ class TrainConfig:
     step_limit: int = 2000
 
     batch_size: int = 4
+    eval_batch_size: int = 32   # larger batch during validation (better throughput)
     seed: int = 42
     train_ratio: float = 0.9
+    dataset_path: str = "ds/tiny_shakespeare.txt"
 
     device: str = "cpu"
     output_path: str = "ckpt/"
@@ -34,6 +36,7 @@ class TrainConfig:
 
     save_interval: int | None = None
     valid_interval: int = 50
+    valid_batches: int = 100   # number of randomly-sampled batches per validation
     single_batch_test: bool = False
 
     def __post_init__(self):

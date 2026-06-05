@@ -41,7 +41,8 @@ def get_SingleNumpy_train_valid_DataLoader(
         txt_path: str,
         train_ratio: float,
         args,
-        batch_size: int):
+        batch_size: int,
+        eval_batch_size: int):
 
     arr = txt_to_np(txt_path)
 
@@ -61,10 +62,10 @@ def get_SingleNumpy_train_valid_DataLoader(
 
 
     train_ds = SingleNumpyDataset(arr_train, args.context_len + 1)
-    valid_ds = NumpyValidDataset(arr_valid, args.context_len + 1)
+    valid_ds = SingleNumpyDataset(arr_valid, args.context_len + 1)   # random sampling, like train
 
     train_dataloader = DataLoader(dataset=train_ds, batch_size=batch_size, collate_fn=collate_fn)
-    valid_dataloader = DataLoader(dataset=valid_ds, batch_size=batch_size, collate_fn=collate_fn)
+    valid_dataloader = DataLoader(dataset=valid_ds, batch_size=eval_batch_size, collate_fn=collate_fn)
 
     return train_dataloader, valid_dataloader
 
@@ -137,13 +138,15 @@ def train(config_path: str):
     loss = torch.nn.CrossEntropyLoss()
 
     train_dataloader, valid_dataloader = get_SingleNumpy_train_valid_DataLoader(
-        'ds/tiny_shakespeare.txt',
+        config.dataset_path,
         config.train_ratio,
         model_args,
         batch_size=config.batch_size,
+        eval_batch_size=config.eval_batch_size,
     )
 
     batches = iter(train_dataloader)
+    valid_iter = iter(valid_dataloader)
 
     if config.single_batch_test:
         single_batch = next(batches)
@@ -202,10 +205,12 @@ def train(config_path: str):
 
             if step % config.valid_interval == 0:
                 model.eval()
-                with torch.no_grad():
+                with torch.inference_mode():
+                    # sampling-based eval: average loss over a fixed number of
+                    # randomly-sampled batches instead of the whole valid set
                     valid_loss = 0
-                    for batch in valid_dataloader:
-                        input, label = batch
+                    for _ in range(config.valid_batches):
+                        input, label = next(valid_iter)
 
                         input = input.to(device=device)
                         label = label.to(device=device)
@@ -217,7 +222,7 @@ def train(config_path: str):
 
                         valid_loss += l.item()
 
-                    valid_loss /= len(valid_dataloader)
+                    valid_loss /= config.valid_batches
 
                     valid_writer.add_scalar("loss", valid_loss, step)
 

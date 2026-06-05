@@ -1,10 +1,10 @@
 model_args:
   vocab_size: 256
-  dim: 512
-  v_dim_mult: 2
-  ffn_mult: 3
-  head: 4
-  n_layers: 8
+  dim: 1024
+  v_dim_mult: 1
+  ffn_mult: 4
+  head: 8
+  n_layers: 12
   context_len: 1024
 
 lr: 3e-4
@@ -16,9 +16,12 @@ step_limit: 3000
 batch_size: 8
 seed: 42
 train_ratio: 0.9
+dataset_path: ds/enwiki8.txt
 device: mps
 output_path: 'ckpt/'
-experiment_name: transformer-vdim2
-save_interval: 100
-valid_interval: 50
+experiment_name: transformer-enwiki8
+save_interval: 500
+valid_interval: 100
+eval_batch_size: 32
+valid_batches: 8
 single_batch_test: False
