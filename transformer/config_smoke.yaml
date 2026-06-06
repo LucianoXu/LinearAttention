@@ -11,28 +11,25 @@ lr: 3e-4
 wd: 0.05
 betas: [0.9, 0.98]
 grad_norm_clip: 1.0
-warm_up_steps: 300
-step_limit: 5000
+warm_up_steps: 100
+step_limit: 1000
 
-# batch_size is PER-GPU; effective batch = batch_size * grad_accum_steps * num_gpus
 batch_size: 64
 grad_accum_steps: 1
 seed: 42
 train_ratio: 0.9
 
-# --- efficiency (A100) ---
-device: cuda          # ignored under torchrun (each rank uses its own cuda:LOCAL_RANK)
-dtype: bfloat16       # A100 native; no GradScaler needed
+device: cuda
+dtype: bfloat16
 compile: true
 tf32: true
 num_workers: 8
 data_path: /ptmp/yinxu/LinearAttention/ds/tiny_shakespeare.txt
 
-# checkpoints + tensorboard go to scratch (/ptmp), not the home quota
 output_path: /ptmp/yinxu/LinearAttention/ckpt
-experiment_name: transformer-a100
+experiment_name: transformer-smoke
 
-save_interval: 1000
+save_interval: 500
 valid_interval: 200
 log_interval: 10
 single_batch_test: false

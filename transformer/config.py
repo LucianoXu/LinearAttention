@@ -24,16 +24,25 @@ class TrainConfig:
     warm_up_steps: int = 300
     step_limit: int = 2000
 
-    batch_size: int = 4
+    batch_size: int = 4            # PER-GPU micro-batch size
+    grad_accum_steps: int = 1      # micro-batches accumulated before optimizer.step()
     seed: int = 42
     train_ratio: float = 0.9
 
-    device: str = "cpu"
+    device: str = "cpu"            # ignored under DDP/torchrun: each rank uses its own cuda:LOCAL_RANK
     output_path: str = "ckpt/"
     experiment_name: str = "example"
 
+    # ---- efficiency knobs (A100 / multi-GPU) ----
+    dtype: str = "bfloat16"        # autocast dtype: "bfloat16" | "float16" | "float32"
+    compile: bool = True           # wrap the model in torch.compile
+    tf32: bool = True              # allow TF32 matmul/cudnn on Ampere+
+    num_workers: int = 4           # DataLoader workers PER rank
+    data_path: str = "ds/tiny_shakespeare.txt"
+
     save_interval: int | None = None
     valid_interval: int = 50
+    log_interval: int = 10
     single_batch_test: bool = False
 
     def __post_init__(self):

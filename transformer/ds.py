@@ -1,7 +1,11 @@
-from datasets import load_dataset
 import numpy as np
 
 def get_tiny_shakespeare(path: str):
+    # `datasets` is only needed for this one-off download, and it is NOT part of
+    # the MPCDF pytorch module. Import it lazily so that training (which only
+    # reads the already-downloaded .txt) never depends on it.
+    from datasets import load_dataset
+
     url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 
     ds = load_dataset("text", data_files=url, sample_by="document")
@@ -32,4 +36,6 @@ def circle_slice(arr: np.ndarray, idx: int, l: int) -> np.ndarray:
     else:
         # circling scenario
         l_ = idx + l - size
-        return np.concat((arr[idx:], arr[:l_]))
+        # np.concatenate works on every numpy version; np.concat is a numpy>=2.0
+        # alias that does NOT exist in the container's numpy 1.24.
+        return np.concatenate((arr[idx:], arr[:l_]))
