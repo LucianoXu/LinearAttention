@@ -2,6 +2,6 @@
 
 if __name__ == '__main__':
 
-    from retnet.train import train
+    from transformer.train import train
 
-    train('retnet/config.yaml')
+    train('transformer/config.yaml')

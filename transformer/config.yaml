@@ -1,10 +1,10 @@
 model_args:
   vocab_size: 256
-  dim: 512
-  v_dim_mult: 2
-  ffn_mult: 3
-  head: 4
-  n_layers: 8
+  dim: 1024
+  v_dim_mult: 1
+  ffn_mult: 4
+  head: 8
+  n_layers: 12
   context_len: 1024
 
 lr: 3e-4
@@ -26,7 +26,11 @@ dtype: bfloat16       # A100 native; no GradScaler needed
 compile: true
 tf32: true
 num_workers: 8
-data_path: /ptmp/yinxu/LinearAttention/ds/tiny_shakespeare.txt
+
+# NOTE: main switched to enwik8 + a bigger model; on raven the dataset must live
+# on /ptmp. Only tiny_shakespeare is present there for now — download enwik8 to
+# /ptmp and point here to train on it instead.
+dataset_path: /ptmp/yinxu/LinearAttention/ds/tiny_shakespeare.txt
 
 # checkpoints + tensorboard go to scratch (/ptmp), not the home quota
 output_path: /ptmp/yinxu/LinearAttention/ckpt
@@ -34,5 +38,7 @@ experiment_name: transformer-a100
 
 save_interval: 1000
 valid_interval: 200
+eval_batch_size: 32     # full-size validation batch (main's sampling-based eval)
+valid_batches: 20       # randomly-sampled batches averaged per validation
 log_interval: 10
 single_batch_test: false

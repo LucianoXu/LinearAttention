@@ -13,7 +13,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset, IterableDataset, DistributedSampler
+from torch.utils.data import DataLoader, IterableDataset
 
 import tqdm
 
@@ -91,19 +91,6 @@ class SingleNumpyDataset(IterableDataset):
             yield circle_slice(self.arr, idx, self.slice_len)
 
 
-class NumpyValidDataset(Dataset):
-    def __init__(self, arr: np.ndarray, slice_len: int):
-        self.slice_len = slice_len
-        self.arr = arr
-        self.arr_len = len(self.arr)
-
-    def __len__(self):
-        return self.arr_len // self.slice_len
-
-    def __getitem__(self, i: int):
-        return circle_slice(self.arr, i * self.slice_len, self.slice_len)
-
-
 def _collate_fn(batch: list[np.ndarray]):
     batch_ts = torch.tensor(np.array(batch), dtype=torch.long)
     return batch_ts[:, :-1], batch_ts[:, 1:]
@@ -114,6 +101,7 @@ def get_SingleNumpy_train_valid_DataLoader(
         train_ratio: float,
         args,
         batch_size: int,
+        eval_batch_size: int,
         num_workers: int,
         seed: int,
         rank: int,
@@ -125,13 +113,11 @@ def get_SingleNumpy_train_valid_DataLoader(
     arr_valid = arr[slice_idx:]
 
     train_ds = SingleNumpyDataset(arr_train, args.context_len + 1, seed=seed, rank=rank)
-    valid_ds = NumpyValidDataset(arr_valid, args.context_len + 1)
-
-    # shard validation across ranks so each GPU scores a disjoint slice
-    valid_sampler = (
-        DistributedSampler(valid_ds, num_replicas=world_size, rank=rank, shuffle=False)
-        if world_size > 1 else None
-    )
+    # validation also samples random *fixed-size* slices (per-rank decorrelated,
+    # offset seed so it isn't the same stream as train). Fixed eval_batch_size
+    # means no torch.compile shape recompiles, and we average over a fixed number
+    # of batches (config.valid_batches) rather than the whole valid set.
+    valid_ds = SingleNumpyDataset(arr_valid, args.context_len + 1, seed=seed + 7, rank=rank)
 
     train_dataloader = DataLoader(
         dataset=train_ds, batch_size=batch_size, collate_fn=_collate_fn,
@@ -139,8 +125,8 @@ def get_SingleNumpy_train_valid_DataLoader(
         persistent_workers=(num_workers > 0),
     )
     valid_dataloader = DataLoader(
-        dataset=valid_ds, batch_size=batch_size, collate_fn=_collate_fn,
-        sampler=valid_sampler, num_workers=num_workers, pin_memory=True,
+        dataset=valid_ds, batch_size=eval_batch_size, collate_fn=_collate_fn,
+        num_workers=num_workers, pin_memory=True,
         persistent_workers=(num_workers > 0),
     )
 
@@ -251,10 +237,11 @@ def train(config_path: str):
     ce = torch.nn.CrossEntropyLoss()
 
     train_dataloader, valid_dataloader = get_SingleNumpy_train_valid_DataLoader(
-        config.data_path,
+        config.dataset_path,
         config.train_ratio,
         model_args,
         batch_size=config.batch_size,
+        eval_batch_size=config.eval_batch_size,
         num_workers=config.num_workers,
         seed=config.seed,
         rank=rank,
@@ -262,6 +249,7 @@ def train(config_path: str):
     )
 
     batches = iter(train_dataloader)
+    valid_iter = iter(valid_dataloader)
     single_batch = next(batches) if config.single_batch_test else None
 
     # tensorboard is optional (not in the base module); degrade gracefully.
@@ -330,8 +318,9 @@ def train(config_path: str):
                 save_model_optimizer(step)
 
             if step % config.valid_interval == 0:
-                valid_loss = evaluate(model, valid_dataloader, ce, causal_mask,
-                                      device, autocast_ctx, is_distributed, world_size)
+                valid_loss = evaluate(model, valid_iter, config.valid_batches, ce,
+                                      causal_mask, device, autocast_ctx,
+                                      is_distributed, world_size)
                 if is_main and valid_writer is not None:
                     valid_writer.add_scalar("loss", valid_loss, step)
                 model.train()
@@ -348,21 +337,20 @@ def train(config_path: str):
 
 
 @torch.no_grad()
-def evaluate(model, valid_dataloader, ce, causal_mask, device, autocast_ctx,
+def evaluate(model, valid_iter, valid_batches, ce, causal_mask, device, autocast_ctx,
              is_distributed, world_size):
-    """Average per-batch validation loss across this rank's shard, then
-    all-reduce so every rank agrees on the global figure."""
+    """Average loss over a fixed number of randomly-sampled validation batches
+    (each rank draws its own decorrelated batches), all-reduced so every rank
+    agrees on the global figure."""
     model.eval()
-    # Validate with the EAGER module: the last validation batch is smaller than
-    # batch_size, and feeding a new shape to the torch.compile'd model triggers a
-    # symbolic-shape recompile that crashes ("Cannot call numel() on tensor with
-    # symbolic sizes/strides"). Validation is infrequent, so eager is fine. The
-    # eager module shares weights with the compiled/DDP wrapper, so this is exact.
+    # Validate with the EAGER module: even though sampled batches are fixed-size,
+    # using the uncompiled module keeps validation independent of torch.compile.
+    # The eager module shares weights with the compiled/DDP wrapper, so it's exact.
     fwd_model = unwrap_model(model)
     loss_sum = torch.zeros((), device=device)
-    n_batches = torch.zeros((), device=device)
 
-    for input, label in valid_dataloader:
+    for _ in range(valid_batches):
+        input, label = next(valid_iter)
         input = input.to(device=device, non_blocking=True)
         label = label.to(device=device, non_blocking=True)
         with autocast_ctx:
@@ -370,10 +358,9 @@ def evaluate(model, valid_dataloader, ce, causal_mask, device, autocast_ctx,
             B, T, V = logits.shape
             l = ce(logits.reshape(B * T, V), label.reshape(B * T))
         loss_sum += l.detach()
-        n_batches += 1
 
     if is_distributed:
+        # each rank ran `valid_batches` batches -> divide by the global total
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(n_batches, op=dist.ReduceOp.SUM)
-
-    return (loss_sum / n_batches.clamp(min=1)).item()
+        return (loss_sum / (valid_batches * world_size)).item()
+    return (loss_sum / valid_batches).item()

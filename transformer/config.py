@@ -26,8 +26,10 @@ class TrainConfig:
 
     batch_size: int = 4            # PER-GPU micro-batch size
     grad_accum_steps: int = 1      # micro-batches accumulated before optimizer.step()
+    eval_batch_size: int = 32      # (full-size) batch used during validation
     seed: int = 42
     train_ratio: float = 0.9
+    dataset_path: str = "ds/tiny_shakespeare.txt"
 
     device: str = "cpu"            # ignored under DDP/torchrun: each rank uses its own cuda:LOCAL_RANK
     output_path: str = "ckpt/"
@@ -38,10 +40,10 @@ class TrainConfig:
     compile: bool = True           # wrap the model in torch.compile
     tf32: bool = True              # allow TF32 matmul/cudnn on Ampere+
     num_workers: int = 4           # DataLoader workers PER rank
-    data_path: str = "ds/tiny_shakespeare.txt"
 
     save_interval: int | None = None
     valid_interval: int = 50
+    valid_batches: int = 100       # randomly-sampled batches per validation
     log_interval: int = 10
     single_batch_test: bool = False
 
