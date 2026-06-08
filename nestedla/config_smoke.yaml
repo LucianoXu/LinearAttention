@@ -1,0 +1,44 @@
+# Overfit-a-batch smoke: tiny model, single repeated batch, no compile (fast
+# feedback). Loss should collapse toward 0 -> proves the model + training loop +
+# data path are wired correctly. Runs in well under the 15-min gpudev limit.
+model_args:
+  vocab_size: 760        # 256 bytes + 500 units + 4 specials
+  dim: 256
+  v_dim_mult: 1
+  head: 4
+  ffn_mult: 3
+  n_layers: 4
+  context_len: 512
+  chunk_size: 128
+  slow_memory: true
+  slow_gamma_power: 0.25
+
+lr: 3e-4
+wd: 0.0
+betas: [0.9, 0.98]
+grad_norm_clip: 1.0
+warm_up_steps: 20
+step_limit: 200
+
+batch_size: 8
+grad_accum_steps: 1
+eval_batch_size: 8
+seed: 42
+
+units_dir: /ptmp/yinxu/LinearAttention/units
+train_split: dev-clean
+valid_split: dev-clean
+
+device: cuda
+dtype: bfloat16
+compile: false
+tf32: true
+num_workers: 4
+
+save_interval: null
+valid_interval: 100
+valid_batches: 5
+log_interval: 10
+single_batch_test: true
+output_path: /ptmp/yinxu/LinearAttention/ckpt
+experiment_name: nestedla-smoke
