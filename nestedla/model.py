@@ -40,6 +40,12 @@ class ModelArgs:
     chunk_size: int = 256          # C: chunk length for the chunkwise scan
     slow_memory: bool = True       # toggle the nested slow-memory level (A/B knob)
     slow_gamma_power: float = 0.25  # gamma_slow = gamma_fast ** p  (p<1 -> slower)
+    fast_decay_min_exp: int = 5    # fast head gammas = 1 - 2^-(e..e+H-1); head
+                                   # horizons ~= 2^e .. 2^(e+H-1) tokens. The
+                                   # default (e=5) makes the slowest fast head
+                                   # span ~2^12 > context, so a separate slow
+                                   # memory is redundant; lowering e localizes
+                                   # fast memory and gives the slow level a job.
 
 
 class RoPE(nn.Module):
@@ -110,7 +116,7 @@ class NestedMemory(nn.Module):
         self.Dv = args.dim * args.v_dim_mult // H
 
         # per-head fast decay (RetNet schedule); slow decay is closer to 1
-        gamma = 1 - torch.pow(2.0, -5 - torch.arange(0, H))
+        gamma = 1 - torch.pow(2.0, -float(args.fast_decay_min_exp) - torch.arange(0, H))
         self.register_buffer("gamma", gamma, persistent=False)
         self.register_buffer("gamma_slow", torch.pow(gamma, args.slow_gamma_power),
                              persistent=False)
