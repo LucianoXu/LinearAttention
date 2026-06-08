@@ -51,15 +51,26 @@ def build_sequence(vocab: Vocab, text: str, units: np.ndarray,
 
 
 class SpokenLMDataset(Dataset):
-    """One interleaved utterance per item, truncated to `context_len`.
+    """Interleaved speech-text windows.
 
-    Packing multiple utterances per window is a later optimization; one
-    utterance per item keeps the speech/text spans clean for per-modality loss
-    and is plenty for the ablation.
+    Two modes:
+
+    - `pack=False` (default): one interleaved utterance per item, truncated to
+      `context_len`. Keeps spans clean but a single LibriSpeech utterance is
+      ~600 speech units + ~150 text bytes, so most of a 2048 window is padding
+      and no long-range / cross-utterance structure exists -- a regime where a
+      *slower* memory level has nothing to do (verified empirically).
+
+    - `pack=True`: concatenate consecutive utterances (in corpus order, i.e.
+      same speaker/chapter) into a single stream and cut it into full
+      `context_len` windows. This fills the context with real tokens and makes
+      speech spans span *multiple* utterances (thousands of units), so they can
+      exceed the fast-memory horizon -- the regime where the nested slow memory
+      can actually help. This is the "packing" the per-modality ablation needs.
     """
 
     def __init__(self, units_dir: str, split: str, vocab: Vocab,
-                 context_len: int = 2048, seed: int = 42):
+                 context_len: int = 2048, seed: int = 42, pack: bool = False):
         self.vocab = vocab
         self.context_len = context_len
         units, index, meta = UnitStore(units_dir).load(split)
@@ -69,11 +80,37 @@ class SpokenLMDataset(Dataset):
         assert meta["n_units"] == vocab.n_units, \
             f"vocab n_units={vocab.n_units} != cached {meta['n_units']}"
         self._base_seed = seed
+        self.pack = pack
+        if pack:
+            self._build_packed()
+
+    def _build_packed(self):
+        """Concatenate all utterances into one (tokens, mods) stream and index
+        it as non-overlapping windows of length context_len + 1."""
+        W = self.context_len + 1
+        toks_all, mods_all = [], []
+        for i, rec in enumerate(self._index):
+            units = np.asarray(self._units[rec["start"]:rec["start"] + rec["length"]])
+            rng = np.random.default_rng(self._base_seed + i)
+            text_first = bool(rng.integers(2))
+            t, m = build_sequence(self.vocab, rec["text"], units, text_first)
+            toks_all.extend(t); mods_all.extend(m)
+        self._ptoks = np.asarray(toks_all, dtype=np.int32)
+        self._pmods = np.asarray(mods_all, dtype=np.int8)
+        # non-overlapping windows; drop the short tail
+        self._n_windows = max(0, (self._ptoks.shape[0] - 1) // self.context_len)
 
     def __len__(self) -> int:
-        return len(self._index)
+        return self._n_windows if self.pack else len(self._index)
 
     def __getitem__(self, i: int):
+        if self.pack:
+            s = i * self.context_len
+            e = s + self.context_len + 1            # +1 so the shift still yields context_len
+            toks = self._ptoks[s:e]
+            mods = self._pmods[s:e]
+            return {"tokens": torch.tensor(toks, dtype=torch.long),
+                    "mods": torch.tensor(mods, dtype=torch.long)}
         rec = self._index[i]
         units = np.asarray(self._units[rec["start"]:rec["start"] + rec["length"]])
         # deterministic-but-varied direction per (item, epoch-ish) without global state

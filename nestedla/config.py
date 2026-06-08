@@ -32,6 +32,9 @@ class TrainConfig:
     units_dir: str = "/ptmp/yinxu/LinearAttention/units"
     train_split: str = "train-clean-100"
     valid_split: str = "dev-clean"
+    pack: bool = False             # pack consecutive utterances into full windows
+                                   # (long cross-utterance speech spans) vs one
+                                   # utterance per window (mostly padding)
 
     device: str = "cpu"            # ignored under DDP/torchrun
     output_path: str = "ckpt/"
