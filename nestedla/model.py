@@ -40,6 +40,11 @@ class ModelArgs:
     chunk_size: int = 256          # C: chunk length for the chunkwise scan
     slow_memory: bool = True       # toggle the nested slow-memory level (A/B knob)
     slow_gamma_power: float = 0.25  # gamma_slow = gamma_fast ** p  (p<1 -> slower)
+    slow_gate_bias_init: float = -2.0  # init bias of the slow read gate; -2 =>
+                                   # ~0.12 open (starts ~closed). Set positive to
+                                   # FORCE the slow memory engaged (diagnostic:
+                                   # is the slow level useful when actually used,
+                                   # vs. the model choosing to keep it shut?).
     fast_decay_min_exp: int = 5    # fast head gammas = 1 - 2^-(e..e+H-1); head
                                    # horizons ~= 2^e .. 2^(e+H-1) tokens. The
                                    # default (e=5) makes the slowest fast head
@@ -134,7 +139,7 @@ class NestedMemory(nn.Module):
             # init, then learns to open the gate).
             self.slow_gate = nn.Linear(args.dim, H, bias=True)
             nn.init.zeros_(self.slow_gate.weight)
-            nn.init.constant_(self.slow_gate.bias, -2.0)
+            nn.init.constant_(self.slow_gate.bias, args.slow_gate_bias_init)
 
     # -- shared projection + post-processing -------------------------------
     def _project(self, x):
