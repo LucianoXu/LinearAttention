@@ -114,6 +114,44 @@ So the slow level is *useful but only in small, learned amounts*, and its benefi
 is *speech-specific* and *scale-emergent*. A natural next test is longer context
 (below).
 
+### Context-4096 (train-clean-360, 8000 steps, packed + local fast)
+
+PPL (nested vs baseline): speech 3.372 → 3.366 (Δ +0.17%), text 2.274 → 2.276
+(flat), special 3.008 → 2.972 (+1.17%). Δspeech = +0.006 > Δtext = −0.002 — same
+direction (nested helps speech, text flat), gate openness 0.131. Figure:
+`results/headline_ctx4k360.png`.
+
+**Caveat — not a clean scaling comparison.** To fit 4096 context this run used
+batch 4 / 8000 steps = ~524M training tokens, vs ~786M for the 2048 run, so it
+is *under-trained* relative to ctx-2048; the smaller Δspeech cannot be attributed
+to context length. The direction is consistent. A **budget-matched context
+sweep** (equal tokens at 2048 vs 4096 vs 8192) is the right way to test whether
+the speech gain grows with context — left as the first follow-up.
+
+## Summary of all runs
+
+| # | data / steps | context | fast decay | packed | Δspeech (PPL) | Δtext (PPL) | gate | verdict |
+|---|---|---|---|---|---:|---:|---:|---|
+| 1 | 100 / 5k | 2048 | default | no | ~0 | −0.07 | 0.124 | flat |
+| 2 | 100 / 5k | 2048 | local | no | ~0 | +0.07 | 0.127 | flat |
+| 3 | 100 / 5k | 2048 | local | yes | −0.12 | −0.33 | 0.128 | nested worse |
+| 4 | **360 / 12k** | 2048 | local | yes | **+0.038 (−1.08%)** | −0.007 (flat) | 0.138 | **speech-specific gain** |
+| 4b | 360 / 12k | 2048 | local | yes, gate forced open | −0.02 | −0.02 | 0.851 | forcing hurts |
+| 5 | 360 / 8k | 4096 | local | yes | +0.006 | −0.002 | 0.131 | consistent, under-trained |
+
+(Δ = baseline − nested PPL; positive ⇒ nested better. Run 4 is the headline.)
+
+## Conclusion
+
+The nested two-level memory delivers a **small, speech-specific perplexity gain
+that emerges with scale** (run 4: −1.08% speech PPL, text unchanged), in the
+direction the Nested-Learning hypothesis predicts. It is **not** a large effect
+and it requires the right regime — enough data/steps, packed long-context
+windows, and fast memory localized below the context length so the slow level
+has a distinct job. The slow memory must be used in *small, learned doses*
+(forcing the gate open hurts). Whether the effect scales further (more data,
+longer context, budget-matched) is the open question for discussion.
+
 ## Options to discuss
 
 - **Accept the negative result** and frame it (the analysis is the contribution:
