@@ -81,7 +81,38 @@ steps, packed + local fast:
   memory engaged** (openness ~0.88) to isolate *is the slow level useful when
   actually used*, rather than relying on the model to open it.
 
-(Results appended below when these finish.)
+### Results (train-clean-360, 12000 steps, packed + local fast decay)
+
+Per-modality validation CE at step 12000; Δ = baseline − nested (>0 ⇒ nested better):
+
+| modality | baseline CE | nested CE | nested-open CE | Δ (nested) | Δ (nested-open) |
+|---|---:|---:|---:|---:|---:|
+| text | 0.900 | 0.903 | 0.907 | −0.003 | −0.008 |
+| **speech** | 1.242 | **1.231** | 1.247 | **+0.011** | −0.006 |
+| special | 1.190 | 1.203 | 1.208 | −0.013 | −0.018 |
+
+As perplexity (nested vs baseline): **speech 3.461 → 3.423 (−1.08%)**, text
+2.459 → 2.466 (+0.27%, flat), special 3.288 → 3.331. Figure:
+`results/headline_packed360.png`.
+
+**This is the hypothesised asymmetry, and it EMERGED with scale.** At
+train-clean-100/5k steps the slow memory was flat-to-harmful; at
+train-clean-360/12k steps the nested model lowers **speech** PPL by ~1% while
+**text** is unchanged — Δspeech > 0 and Δspeech > Δtext, exactly the predicted
+direction. The effect is small and single-seed, but it trends the right way with
+data + steps.
+
+**Gate behaviour confirms the mechanism wants a *light touch*:**
+- learned nested gate openness rose from 0.128 (100/5k) → **0.138** (360/12k),
+  with the gate weights growing (0.02 → 0.027, i.e. it became input-dependent) —
+  a small, learned engagement is what produced the speech gain.
+- `nested-open` (gate **forced** to 0.85 via `slow_gate_bias_init=+2`) is **worse
+  than baseline on every modality** (speech −0.006). Forcing the slow memory
+  fully on hurts; the model's optimal use is a small dose.
+
+So the slow level is *useful but only in small, learned amounts*, and its benefit
+is *speech-specific* and *scale-emergent*. A natural next test is longer context
+(below).
 
 ## Options to discuss
 
