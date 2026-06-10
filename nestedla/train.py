@@ -135,7 +135,20 @@ def train(config_path: str):
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict()},
                    config.exp_dir / f"ckpt-{step}.pth")
-    save_model_optimizer(0)
+
+    start_step = 0
+    if config.resume:
+        cks = sorted(config.exp_dir.glob("ckpt-*.pth"),
+                     key=lambda p: int(p.stem.split("-")[1]))
+        if cks and int(cks[-1].stem.split("-")[1]) > 0:
+            ck = torch.load(cks[-1], map_location="cpu")
+            unwrap_model(model).load_state_dict(ck["model"])
+            optimizer.load_state_dict(ck["optimizer"])
+            scheduler.load_state_dict(ck["scheduler"])
+            start_step = ck["step"]
+            log(f"[resume] loaded {cks[-1]} (step {start_step})")
+    if start_step == 0:
+        save_model_optimizer(0)
 
     train_writer = valid_writer = None
     if is_main:
@@ -146,11 +159,12 @@ def train(config_path: str):
         except Exception as e:
             log(f"[warn] tensorboard unavailable ({e})")
 
-    progress_bar = tqdm.tqdm(range(config.step_limit), desc="Training", disable=not is_main)
-    step = 0
+    progress_bar = tqdm.tqdm(range(config.step_limit), desc="Training",
+                             disable=not is_main, initial=start_step)
+    step = start_step
     model.train()
     try:
-        while True:
+        while step < config.step_limit:
             step += 1
             optimizer.zero_grad(set_to_none=True)
             loss_accum = 0.0
