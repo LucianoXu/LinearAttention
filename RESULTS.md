@@ -141,6 +141,84 @@ the speech gain grows with context — left as the first follow-up.
 
 (Δ = baseline − nested PPL; positive ⇒ nested better. Run 4 is the headline.)
 
+## Day 4 (2026-06-10): benchmarks + mechanism probes
+
+Three new evaluations on the headline packed360 pair (baseline vs nested,
+ckpt-12000), all single-GPU (job 27810343; code: `nestedla/probe_distance.py`,
+`nestedla/probe_continuation.py`, `nestedla/eval_storycloze.py` +
+`speechtext/prepare_storycloze.py`, comparison via `nestedla/plot_probes.py`).
+
+### 1. Where the speech gain lives: distance-bucketed CE (the mechanism probe)
+
+Per-modality CE on packed dev-clean, bucketed by window position (= context
+available to the prediction). Δ = baseline − nested CE (>0 ⇒ nested better):
+
+| bucket | Δ speech | n speech | Δ text | n text |
+|---|---:|---:|---:|---:|
+| [0,128) | +0.0070 | 60k | +0.0055 | 17k |
+| [128,256) | +0.0084 | 60k | +0.0001 | 18k |
+| [256,512) | +0.0090 | 121k | −0.0076 | 35k |
+| [512,1024) | +0.0115 | 239k | −0.0011 | 74k |
+| [1024,2048) | **+0.0122** | 485k | −0.0026 | 142k |
+
+**The nested speech gain grows monotonically with available context** (+0.007 →
++0.012, ~1.7×) while the text Δ is flat-to-negative — exactly the signature the
+slow-memory mechanism predicts: the aggregate −1.08% speech PPL is concentrated
+beyond the fast-memory horizon (~512), where only the slow level can carry
+information. Bucketing by tokens-since-utterance-start shows the same growth
+(+0.008 at [0,128) → +0.024 at [1024,2048)), i.e. the gain also deepens within
+long utterances; it is context-volume, not specifically cross-utterance recall.
+The under-trained ctx-4096 pair shows the same direction but ~6× weaker
+(Δspeech ≈ +0.002 at long range), consistent with its under-training.
+Figure: `results/probe_distance.png`.
+
+### 2. Continuation discrimination: long context helps, nested doesn't help more
+
+400 utterance boundaries in dev-clean chapter streams; score the true next
+utterance's speech span vs a random other-speaker span (mean log-prob given the
+preceding N tokens). Accuracy (chance 0.5):
+
+| ctx tokens | baseline | nested | Δ |
+|---|---:|---:|---:|
+| 0 | 0.515 | 0.493 | −0.023 |
+| 256 | 0.625 | 0.615 | −0.010 |
+| 512 | 0.665 | 0.645 | −0.020 |
+| 1024 | 0.690 | 0.685 | −0.005 |
+| 1792 | 0.693 | 0.688 | −0.005 |
+
+The probe itself is healthy — accuracy climbs 51%→69% with context, and keeps
+inching up past the fast horizon. But **nested ≈ baseline at every context
+length** (differences within noise at n=400, SE ≈ 2.3%): the slow memory's PPL
+gain does not convert into better long-range *discrimination*.
+Figure: `results/probe_continuation.png`.
+
+### 3. Spoken StoryCloze (sSC / tSC, slprl multispeaker, bm voice, n=1871)
+
+Standard SpeechLM benchmark: correct- vs wrong-ending spoken stories, accuracy
+by total log-likelihood (per-token in parens):
+
+| task | baseline | nested |
+|---|---:|---:|
+| sSC | 0.486 (0.517) | 0.483 (0.507) |
+| tSC | 0.486 (0.512) | 0.488 (0.507) |
+
+**Both models are at chance.** Expected at this scale: TWIST-style models need
+~1B+ params and orders more data to clear 55–80% here, and Kokoro-TTS audio is
+a domain shift from LibriSpeech audiobook speech (HuBERT units still transfer:
+per-token accuracies are marginally >0.5). The benchmark has no headroom to
+separate the pair at 93M/360h — a scale gate, not a negative for the mechanism.
+
+### Day 4 verdict
+
+The distance probe upgrades the headline result from "small aggregate PPL gain"
+to **a gain that lives where a slow memory should act and grows with context** —
+the strongest mechanistic evidence so far. But two zero-shot *discriminative*
+tests (continuation, StoryCloze) show no benefit: the slow level improves dense
+next-unit prediction, not yet usable long-range decisions. That gap (PPL ≠
+ability) is the honest framing for the showcase, and it sharpens the next
+steps: scale (data/params), a hard-closable gate, and long-form data where
+decisions *require* memory.
+
 ## Conclusion
 
 The nested two-level memory delivers a **small, speech-specific perplexity gain
