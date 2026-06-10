@@ -141,6 +141,87 @@ the speech gain grows with context — left as the first follow-up.
 
 (Δ = baseline − nested PPL; positive ⇒ nested better. Run 4 is the headline.)
 
+## Day 5 (2026-06-10 evening): scale-up to 330M / 960h / ctx-8192 + an architecture fix
+
+Two changes this round, then the headline A/B re-run at ~3.5× params, 2.7× data,
+4× context:
+
+**Architecture fix (`nestedla/model.py`):**
+1. **RoPE off by default** (`use_rope=False`). The per-head decay already encodes
+   position (RetNet-style), so RoPE is redundant on the fast path *and* corrupts
+   the slow read: chunk-averaging rotated keys cancels high-freq phase, and the
+   huge relative phase over thousands of tokens turns `q·k_slow` into noise.
+2. **fp32 decay tables + cross-chunk state.** In bf16 the slow heads' gammas
+   (close to 1) round to *exactly* 1.0, silently removing their decay so the
+   recurrent state grows unbounded. Compute now promotes to fp32; the fp64
+   equivalence test still passes (chunkwise == reference, err ~1e-9, both toggles).
+
+**Run:** 24L d=1024 (329M), ctx 8192, chunk 256, packed, `fast_decay_min_exp=2`,
+train-960 (281k utts / 173M units = 100+360+500), 18k steps, 4×A100, ~1 s/step
+(jobs 27815346/47). Eval at the **best checkpoint, step 10500** (see overtraining
+note), full dev-clean, job 27829662. Figures in `results/960L8k/`.
+
+### Overtraining (operational finding)
+
+Dev speech-CE bottomed at **step ~10200** for both models, then rose steadily to
+step 18000 (baseline speech CE 1.065 → 1.139, +7%); 18k steps ≈ 14 epochs of
+173M units was too many with cosine decay to ~0 LR. **The final checkpoint is not
+the best one** — all numbers below use step 10500. Next runs should cap ~10k
+steps or add early stopping.
+
+### The architecture fix worked — and that makes the result a *stronger* negative
+
+| metric (step 10500, full dev-clean) | baseline | nested | Δ |
+|---|---:|---:|---:|
+| speech PPL | **2.959** | 2.977 | **−0.6% (nested worse)** |
+| text PPL | 1.945 | 1.936 | +0.4% (nested better) |
+| slow-gate openness (mean) | — | **0.209** | (init 0.119; was 0.138 at 93M) |
+
+**The gate opened — and the model genuinely uses the slow level now.** Per-head
+openness: `0.012 0.019 0.031 0.041 0.138 0.222 0.414 0.797` — the four
+fastest-decay heads stay ~shut, but the slowest head opens to **0.80** and the
+next two to 0.41 / 0.22. So the fix did exactly what it should mechanically: the
+slow gammas no longer collapse to 1.0 and RoPE no longer corrupts the read, so
+the slow memory is actually engaged where a slow memory makes sense (the slow
+heads). **And yet speech PPL is slightly *worse*.**
+
+This kills the old escape hatch. At 93M the easy story was "the model declines
+to open the gate." Now it opens it, engages the slow heads, and the slow memory
+*still does not help* speech-unit prediction — it slightly hurts. The 93M
+positive (+1.08% speech, gain growing with context) **did not survive scale + the
+fix**: the distance probe now shows a small *uniform* speech deficit at every
+window position (Δspeech −0.005 to −0.008 beyond 256 tokens), not a
+context-growing gain. The continuation probe agrees — nested is ≤ baseline at
+every context length (e.g. 0.748 vs 0.773 at ctx 2048), converging only at the
+very longest context (0.765 vs 0.773 at 7936). The 93M effect is best read as a
+small-model/old-bug artifact, not a robust mechanism.
+
+### Why: LibriSpeech has no exploitable structure past ~40 s (the corpus is the wall)
+
+The continuation probe at 330M / ctx 8192 is the cleanest evidence yet:
+
+| ctx tokens | 0 | 512 | 1024 | 2048 | 4096 | 7936 |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline acc | 0.530 | 0.722 | 0.760 | **0.773** | 0.775 | 0.773 |
+
+Accuracy climbs steeply to ~0.77 by **2048 tokens (~40 s)** and is then **flat**
+(4096, 7936 add nothing) — a 330M model with 8192-token context extracts no
+additional predictive signal from read-audiobook speech beyond ~40 s. There is
+nothing for a slow memory to carry, so engaging it can only add variance. Spoken
+StoryCloze stays at chance for both models (sSC 0.47–0.48, tSC 0.49; per-token
+tSC 0.52–0.53), confirming the benchmark is scale-gated well past 330M.
+
+### Day 5 verdict
+
+The mechanism is no longer in question and the data is: with the slow level
+genuinely engaged (gate 0.80 on the slow head), it does not help — slightly
+hurts — next-unit prediction at 330M / 960h, and the predictable structure in
+LibriSpeech saturates by ~40 s. **The bottleneck is the corpus, not the model or
+its willingness to use slow memory.** This is the decisive motivation to move to
+a corpus with genuine long-range structure (conversational / podcast, e.g.
+GigaSpeech), where the continuation signal would *not* plateau at 2 k tokens —
+that is the next experiment.
+
 ## Day 4 (2026-06-10): benchmarks + mechanism probes
 
 Three new evaluations on the headline packed360 pair (baseline vs nested,

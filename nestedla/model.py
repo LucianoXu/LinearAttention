@@ -38,6 +38,13 @@ class ModelArgs:
     context_len: int = 2048
 
     chunk_size: int = 256          # C: chunk length for the chunkwise scan
+    use_rope: bool = False         # apply RoPE to q/k. Default OFF: the per-head
+                                   # decay already encodes position (RetNet-style),
+                                   # so RoPE is redundant on the fast path; worse,
+                                   # it corrupts the slow read -- chunk-averaging
+                                   # rotated keys cancels high-freq phase, and the
+                                   # huge relative phase over thousands of tokens
+                                   # turns q.k_slow into noise. See model docstring.
     slow_memory: bool = True       # toggle the nested slow-memory level (A/B knob)
     slow_gamma_power: float = 0.25  # gamma_slow = gamma_fast ** p  (p<1 -> slower)
     slow_gate_bias_init: float = -2.0  # init bias of the slow read gate; -2 =>
@@ -145,8 +152,10 @@ class NestedMemory(nn.Module):
     def _project(self, x):
         B, L, _ = x.shape
         H, Dh = self.args.head, self.Dh
-        q = self.rope(self.wq(x).reshape(B, L, H, Dh).transpose(1, 2))   # (B,H,L,Dh)
-        k = self.rope(self.wk(x).reshape(B, L, H, Dh).transpose(1, 2))
+        q = self.wq(x).reshape(B, L, H, Dh).transpose(1, 2)              # (B,H,L,Dh)
+        k = self.wk(x).reshape(B, L, H, Dh).transpose(1, 2)
+        if self.args.use_rope:
+            q, k = self.rope(q), self.rope(k)
         v = self.wv(x).reshape(B, L, H, self.Dv).transpose(1, 2)         # (B,H,L,Dv)
         return q, k, v
 
@@ -172,49 +181,57 @@ class NestedMemory(nn.Module):
         kc = k.reshape(B, H, NC, C, Dh)
         vc = v.reshape(B, H, NC, C, Dv)
 
-        g = self.gamma.to(x.dtype).view(H, 1, 1)              # (H,1,1)
+        # Decay tables + the cross-chunk recurrent state run in fp32 (or higher).
+        # In bf16 the slow heads' gammas (close to 1) round to exactly 1.0, which
+        # silently removes their decay -> the recurrent state accumulates without
+        # bound. We promote to fp32 for compute; the fp64 equivalence test keeps
+        # full precision (so chunkwise still matches _reference to ~1e-9).
+        cdt = x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
+        gf = self.gamma.to(cdt)
         i = torch.arange(C, device=x.device)
         ij = i.view(C, 1) - i.view(1, C)                      # (C,C)  = local (i - j)
-        D_intra = torch.where(ij >= 0, g.view(H, 1, 1) ** ij.clamp(min=0).float(),
-                              torch.zeros((), device=x.device, dtype=x.dtype))  # (H,C,C)
-        decay_cross = self.gamma.to(x.dtype).view(H, 1) ** (i + 1).float()      # (H,C)
-        kv_local_decay = self.gamma.to(x.dtype).view(H, 1) ** (C - 1 - i).float()  # (H,C)
-        chunk_decay = self.gamma.to(x.dtype) ** C                               # (H,)
+        D_intra = torch.where(ij >= 0, gf.view(H, 1, 1) ** ij.clamp(min=0).to(cdt),
+                              torch.zeros((), device=x.device, dtype=cdt))      # (H,C,C)
+        decay_cross = gf.view(H, 1) ** (i + 1).to(cdt)                          # (H,C)
+        kv_local_decay = gf.view(H, 1) ** (C - 1 - i).to(cdt)                   # (H,C)
+        chunk_decay = gf ** C                                                   # (H,)
+
+        qcf, kcf, vcf = qc.to(cdt), kc.to(cdt), vc.to(cdt)
 
         # intra-chunk (parallel within each chunk)
-        attn = torch.einsum("bhncd,bhnmd->bhncm", qc, kc) * D_intra.view(1, H, 1, C, C)
-        inner = torch.einsum("bhncm,bhnmv->bhncv", attn, vc)                    # (B,H,NC,C,Dv)
+        attn = torch.einsum("bhncd,bhnmd->bhncm", qcf, kcf) * D_intra.view(1, H, 1, C, C)
+        inner = torch.einsum("bhncm,bhnmv->bhncv", attn, vcf)                   # (B,H,NC,C,Dv)
 
         # per-chunk local KV contributions for the FAST state carry
         kv_fast = torch.einsum("bhncd,bhncv->bhndv",
-                               kc * kv_local_decay.view(1, H, 1, C, 1), vc)     # (B,H,NC,Dh,Dv)
+                               kcf * kv_local_decay.view(1, H, 1, C, 1), vcf)   # (B,H,NC,Dh,Dv)
 
         # slow memory: one coarse KV summary per chunk (averaged, no intra decay)
         use_slow = self.args.slow_memory
         if use_slow:
-            kv_slow = torch.einsum("bhncd,bhncv->bhndv", kc, vc) / C            # (B,H,NC,Dh,Dv)
-            gs = self.gamma_slow.to(x.dtype)
+            kv_slow = torch.einsum("bhncd,bhncv->bhndv", kcf, vcf) / C          # (B,H,NC,Dh,Dv)
+            gs = self.gamma_slow.to(cdt)
 
         # sequential scan over the (few) chunks to build start-of-chunk states
-        out = torch.empty(B, H, NC, C, Dv, device=x.device, dtype=v.dtype)
-        S = torch.zeros(B, H, Dh, Dv, device=x.device, dtype=v.dtype)           # fast state
+        out = torch.empty(B, H, NC, C, Dv, device=x.device, dtype=cdt)
+        S = torch.zeros(B, H, Dh, Dv, device=x.device, dtype=cdt)               # fast state
         if use_slow:
-            Z = torch.zeros(B, H, Dh, Dv, device=x.device, dtype=v.dtype)       # slow state
-            slow_gate = torch.sigmoid(self.slow_gate(x)).reshape(B, NC, C, H)   # (B,NC,C,H)
+            Z = torch.zeros(B, H, Dh, Dv, device=x.device, dtype=cdt)           # slow state
+            slow_gate = torch.sigmoid(self.slow_gate(x).to(cdt)).reshape(B, NC, C, H)
 
         for c in range(NC):
             cross = torch.einsum("bhcd,bhdv->bhcv",
-                                 qc[:, :, c] * decay_cross.view(1, H, C, 1), S)  # (B,H,C,Dv)
+                                 qcf[:, :, c] * decay_cross.view(1, H, C, 1), S)  # (B,H,C,Dv)
             y = (inner[:, :, c] + cross) * scale
             if use_slow:
-                slow_read = torch.einsum("bhcd,bhdv->bhcv", qc[:, :, c], Z) * scale
+                slow_read = torch.einsum("bhcd,bhdv->bhcv", qcf[:, :, c], Z) * scale
                 gate = slow_gate[:, c].permute(0, 2, 1).unsqueeze(-1)           # (B,H,C,1)
                 y = y + gate * slow_read
                 Z = gs.view(1, H, 1, 1) * Z + kv_slow[:, :, c]
             out[:, :, c] = y
             S = chunk_decay.view(1, H, 1, 1) * S + kv_fast[:, :, c]
 
-        return self._post(x, out.reshape(B, H, L, Dv))
+        return self._post(x, out.reshape(B, H, L, Dv).to(v.dtype))
 
     # -- reference path (for equivalence tests; explicit recurrence) -------
     def _reference(self, x):
@@ -282,7 +299,7 @@ class NestedLA(nn.Module):
         super().__init__()
         self.args = args
         self.embedding = nn.Embedding(args.vocab_size, args.dim)
-        self.rope = RoPE(args)
+        self.rope = RoPE(args) if args.use_rope else None
         self.blocks = nn.ModuleList([Block(args, self.rope) for _ in range(args.n_layers)])
         self.head_norm = RMSNorm(args.dim)
         self.head = nn.Linear(args.dim, args.vocab_size, bias=False)
