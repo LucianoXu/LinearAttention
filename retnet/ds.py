@@ -47,4 +47,4 @@ def circle_slice(arr: np.ndarray, idx: int, l: int) -> np.ndarray:
     else:
         # circling scenario
         l_ = idx + l - size
-        return np.concat((arr[idx:], arr[:l_]))
+        return np.concatenate((arr[idx:], arr[:l_]))

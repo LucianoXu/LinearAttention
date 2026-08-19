@@ -12,16 +12,33 @@ wd: 0.05
 betas: [0.9, 0.98]
 grad_norm_clip: 1.0
 warm_up_steps: 300
-step_limit: 3000
-batch_size: 8
+step_limit: 5000
+
+# batch_size is PER-GPU; effective batch = batch_size * grad_accum_steps * num_gpus
+batch_size: 64
+grad_accum_steps: 1
 seed: 42
 train_ratio: 0.9
-dataset_path: ds/enwiki8.txt
-device: mps
-output_path: 'ckpt/'
-experiment_name: transformer-enwiki8
-save_interval: 500
-valid_interval: 100
-eval_batch_size: 32
-valid_batches: 8
-single_batch_test: False
+
+# --- efficiency (A100) ---
+device: cuda          # ignored under torchrun (each rank uses its own cuda:LOCAL_RANK)
+dtype: bfloat16       # A100 native; no GradScaler needed
+compile: true
+tf32: true
+num_workers: 8
+
+# NOTE: main switched to enwik8 + a bigger model; on raven the dataset must live
+# on /ptmp. Only tiny_shakespeare is present there for now — download enwik8 to
+# /ptmp and point here to train on it instead.
+dataset_path: /ptmp/yinxu/LinearAttention/ds/tiny_shakespeare.txt
+
+# checkpoints + tensorboard go to scratch (/ptmp), not the home quota
+output_path: /ptmp/yinxu/LinearAttention/ckpt
+experiment_name: transformer-a100
+
+save_interval: 1000
+valid_interval: 200
+eval_batch_size: 32     # full-size validation batch (main's sampling-based eval)
+valid_batches: 20       # randomly-sampled batches averaged per validation
+log_interval: 10
+single_batch_test: false
