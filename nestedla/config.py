@@ -27,11 +27,17 @@ class TrainConfig:
     grad_accum_steps: int = 1
     eval_batch_size: int = 16
     seed: int = 42
+    resume: bool = True            # auto-resume from the latest ckpt-*.pth in
+                                   # exp_dir (lets long runs chain across the
+                                   # 24h partition limit by resubmitting)
 
     # ---- data (speechtext unit store) ----
     units_dir: str = "/ptmp/yinxu/LinearAttention/units"
     train_split: str = "train-clean-100"
     valid_split: str = "dev-clean"
+    pack: bool = False             # pack consecutive utterances into full windows
+                                   # (long cross-utterance speech spans) vs one
+                                   # utterance per window (mostly padding)
 
     device: str = "cpu"            # ignored under DDP/torchrun
     output_path: str = "ckpt/"

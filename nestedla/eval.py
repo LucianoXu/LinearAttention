@@ -90,7 +90,8 @@ def main():
     vocab = Vocab(n_units=model_args.vocab_size - 256 - 4)
     collate = make_collate(vocab, model_args.context_len)
     ds = SpokenLMDataset(config.units_dir, split, vocab,
-                         context_len=model_args.context_len, seed=config.seed + 7)
+                         context_len=model_args.context_len, seed=config.seed + 7,
+                         pack=getattr(config, "pack", False))
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
                         num_workers=config.num_workers, pin_memory=True,
                         collate_fn=collate, drop_last=False)

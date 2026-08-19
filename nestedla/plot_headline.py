@@ -138,8 +138,19 @@ def main():
         deltas[m] = d
         pct = 100.0 * d / b if b else 0.0
         print(f"{m:<9} {b:>10.3f} {n:>10.3f} {d:>9.3f} {pct:>8.2f}%")
-    print(f"\nDelta_speech={deltas['speech']:.3f}  Delta_text={deltas['text']:.3f}  "
-          f"=> {'SPEECH helped more (hypothesis supported)' if deltas['speech'] > deltas['text'] else 'text helped >= speech (hypothesis NOT supported)'}")
+    # honest verdict: the hypothesis is "nested lowers speech PPL, and more so
+    # than text". That needs the speech delta to be positive (nested better) AND
+    # larger than the text delta. A negative speech delta means nested is *worse*
+    # on speech -- not support, regardless of how text moved.
+    ds_sp, ds_tx = deltas["speech"], deltas["text"]
+    if ds_sp > 0 and ds_sp > ds_tx:
+        verdict = "nested lowers speech PPL more than text -> hypothesis SUPPORTED"
+    elif ds_sp <= 0:
+        verdict = "nested does NOT lower speech PPL (delta<=0) -> hypothesis NOT supported"
+    else:
+        verdict = "nested helps text >= speech -> hypothesis NOT supported"
+    print(f"\nDelta_speech={ds_sp:+.3f}  Delta_text={ds_tx:+.3f}  (delta = baseline - nested; >0 means nested better)")
+    print(f"=> {verdict}")
 
 
 if __name__ == "__main__":

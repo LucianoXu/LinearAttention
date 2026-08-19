@@ -1,0 +1,47 @@
+# Speed/memory smoke for the 330M @ ctx8192 scale-up (gpudev, <=15 min):
+# same model as config_nested_960L8k.yaml, 40 steps on the already-cached
+# train-clean-360 units. Reports it/s + peak memory; sizes the real runs.
+model_args:
+  vocab_size: 760
+  dim: 1024
+  v_dim_mult: 1
+  head: 8
+  ffn_mult: 4
+  n_layers: 24
+  context_len: 8192
+  chunk_size: 256
+  slow_memory: true
+  slow_gamma_power: 0.25
+  fast_decay_min_exp: 2
+
+lr: 2e-4
+wd: 0.05
+betas: [0.9, 0.98]
+grad_norm_clip: 1.0
+warm_up_steps: 10
+step_limit: 40
+
+batch_size: 2
+grad_accum_steps: 2
+eval_batch_size: 2
+seed: 42
+resume: false
+
+units_dir: /ptmp/yinxu/LinearAttention/units
+train_split: train-clean-360
+pack: true
+valid_split: dev-clean
+
+device: cuda
+dtype: bfloat16
+compile: true
+tf32: true
+num_workers: 8
+
+save_interval: null
+valid_interval: 20
+valid_batches: 4
+log_interval: 5
+single_batch_test: false
+output_path: /ptmp/yinxu/LinearAttention/ckpt
+experiment_name: nestedla-smoke-960L8k

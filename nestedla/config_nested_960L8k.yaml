@@ -1,0 +1,48 @@
+# SCALE-UP nested: ~330M two-level model, LibriSpeech 960h (train-960 merged
+# split), packed 8192-token windows, fast memory localized (~4..512 token
+# horizons << context). A/B partner of config_baseline_960L8k.yaml -- the ONLY
+# difference is slow_memory.
+model_args:
+  vocab_size: 760
+  dim: 1024
+  v_dim_mult: 1
+  head: 8
+  ffn_mult: 4
+  n_layers: 24
+  context_len: 8192
+  chunk_size: 256
+  slow_memory: true
+  slow_gamma_power: 0.25
+  fast_decay_min_exp: 2
+
+lr: 2e-4
+wd: 0.05
+betas: [0.9, 0.98]
+grad_norm_clip: 1.0
+warm_up_steps: 1000
+step_limit: 18000
+
+batch_size: 2
+grad_accum_steps: 2
+eval_batch_size: 2
+seed: 42
+resume: true
+
+units_dir: /ptmp/yinxu/LinearAttention/units
+train_split: train-960
+pack: true
+valid_split: dev-clean
+
+device: cuda
+dtype: bfloat16
+compile: true
+tf32: true
+num_workers: 8
+
+save_interval: 1500
+valid_interval: 200
+valid_batches: 10
+log_interval: 10
+single_batch_test: false
+output_path: /ptmp/yinxu/LinearAttention/ckpt
+experiment_name: nestedla-nested-960L8k

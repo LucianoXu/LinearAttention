@@ -17,10 +17,11 @@ def build_dataloaders(config, rank: int, world_size: int):
     vocab = Vocab(n_units=args.vocab_size - 256 - 4)   # bytes + specials accounted for
     collate = make_collate(vocab, args.context_len)
 
+    pack = getattr(config, "pack", False)
     train_ds = SpokenLMDataset(config.units_dir, config.train_split, vocab,
-                               context_len=args.context_len, seed=config.seed)
+                               context_len=args.context_len, seed=config.seed, pack=pack)
     valid_ds = SpokenLMDataset(config.units_dir, config.valid_split, vocab,
-                               context_len=args.context_len, seed=config.seed + 7)
+                               context_len=args.context_len, seed=config.seed + 7, pack=pack)
 
     def _sampler(ds, shuffle):
         if world_size > 1:
