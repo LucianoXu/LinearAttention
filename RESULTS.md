@@ -222,6 +222,52 @@ a corpus with genuine long-range structure (conversational / podcast, e.g.
 GigaSpeech), where the continuation signal would *not* plateau at 2 k tokens —
 that is the next experiment.
 
+## Day 5 addendum: RoPE × nested ablation at 93M/360h (job 27817337, recorded 2026-08-19)
+
+Ran on 2026-06-10 (17:45) but not written up until now. A 2×2 at the original
+93M/360h packed scale — {arch-fix i.e. RoPE off, RoPE on} × {baseline, nested} —
+with early stopping: all four evaluated at **step 9000** (before the overtraining
+regime seen at 330M). Configs: `config_*_p360fix_es.yaml` /
+`config_*_p360rope_es.yaml`. Full dev-clean PPL:
+
+| config (93M/360h @ step 9000) | speech PPL | text PPL | special PPL | gate |
+|---|---:|---:|---:|---:|
+| fix (RoPE off) baseline | 3.419 | 2.348 | 3.256 | — |
+| fix (RoPE off) nested | 3.472 (**+1.5% worse**) | 2.319 | 3.301 | 0.223 |
+| rope baseline | 3.376 | 2.349 | 3.349 | — |
+| rope nested | **3.281 (−2.8% better)** | 2.305 (−1.9%) | 3.287 | 0.229 |
+
+Distance probe (window-position speech Δ = baseline − nested CE, >0 ⇒ nested
+better): **rope** grows monotonically +0.002 → +0.009 → +0.024 → +0.031 →
+**+0.034** across buckets — the context-growing signature, cleaner and ~3×
+larger than the original packed360 headline. **fix** is negative in every bucket
+(−0.003 → −0.017): nested uniformly worse. Gate openness is essentially
+identical in both nested runs (0.22–0.23, slowest heads 0.6–0.8), so the fp32
+decay fix does open the gate at 93M too — engagement is not the differentiator.
+
+**This complicates the Day 5 story.** The two changes between the old 93M
+positive and the 330M negative were (a) scale and (b) the arch fix (RoPE off +
+fp32 decay). This ablation isolates (b) at fixed scale: *turning RoPE off is
+itself what flips nested from helping (−2.8% speech, context-growing) to
+hurting (+1.5%)*. That is the opposite of the Day 5 theoretical diagnosis
+("RoPE corrupts the slow read") — empirically the slow memory only pays off
+*with* RoPE on the fast path. Two readings:
+
+1. The 330M negative may be partly an artifact of removing RoPE, not scale —
+   an un-run `rope` A/B at 330M/8192 would settle it. (Caveat: the RoPE-phase
+   problem grows with context, so RoPE-on at 8192 may genuinely break.)
+2. Alternatively, with RoPE off the *fast* heads get better at long range
+   (nothing scrambles their phases), shrinking the slow level's niche — i.e.
+   the nested gain at 93M was compensating for RoPE-induced fast-path damage
+   rather than adding new capability. Consistent with rope-baseline ≈
+   fix-baseline on speech (3.376 vs 3.419, RoPE slightly *better*).
+
+Either way, "the 93M effect was a small-model/old-bug artifact" (Day 5 verdict)
+is too strong: at matched scale and matched early-stopped checkpoints the
+effect reproduces with RoPE on, and the arch fix — not scale — removes it. The
+corpus-saturation finding (continuation probe flat past ~40 s) stands
+regardless and remains the reason to move to conversational data.
+
 ## Day 4 (2026-06-10): benchmarks + mechanism probes
 
 Three new evaluations on the headline packed360 pair (baseline vs nested,

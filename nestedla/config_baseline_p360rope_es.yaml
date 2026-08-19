@@ -1,0 +1,47 @@
+# Flat single-timescale baseline (~94M): chunkwise fast memory only.
+# A/B partner of config_nested.yaml -- the ONLY difference is slow_memory.
+model_args:
+  vocab_size: 760
+  dim: 768
+  v_dim_mult: 1
+  head: 8
+  ffn_mult: 4
+  n_layers: 12
+  context_len: 2048
+  chunk_size: 256
+  slow_memory: false
+  slow_gamma_power: 0.25
+  fast_decay_min_exp: 2
+  use_rope: true
+
+lr: 3e-4
+wd: 0.05
+betas: [0.9, 0.98]
+grad_norm_clip: 1.0
+warm_up_steps: 800
+step_limit: 12000
+
+batch_size: 8            # per-GPU; eff batch = 8 * 4 GPUs = 32 seqs * 2048 tok
+grad_accum_steps: 1
+eval_batch_size: 8
+seed: 42
+resume: false
+
+units_dir: /ptmp/yinxu/LinearAttention/units
+train_split: train-clean-360
+pack: true
+valid_split: dev-clean
+
+device: cuda
+dtype: bfloat16
+compile: true
+tf32: true
+num_workers: 8
+
+save_interval: 1500
+valid_interval: 200
+valid_batches: 20
+log_interval: 10
+single_batch_test: false
+output_path: /ptmp/yinxu/LinearAttention/ckpt
+experiment_name: nestedla-baseline-p360rope-es
